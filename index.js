@@ -4,9 +4,10 @@ import fs from 'fs'
 import LatLon from 'geodesy/latlon-ellipsoidal-vincenty.js'
 
 const classification = {
-  EXIST: 'exist',
-  MAYBE_EXIST: 'maybeExist',
-  NEW: 'new'
+  EXIST: '< 10m',
+  MAYBE_EXIST_1: '10m - 20m',
+  MAYBE_EXIST_2: '20m - 50m',
+  NEW: '> 50m'
 }
 
 const getSheet = async (filePath, sheetName) => {
@@ -32,12 +33,14 @@ const getDBLocationParkings = async cityIds => {
 const readColumnData = async (sheet, column) => {
   const dataMap = {}
   sheet.eachRow((row, rowNumber) => {
-    const cell = row.getCell(column.name)
-    const dataRow = cell.value.split(',')
+    const crawlParkingId = row.getCell(column.crawlParkingId).value
+    const location = row.getCell(column.location).value
+    const [lat, lng] = location.split(',')
     if (rowNumber > 1) {
       dataMap[rowNumber] = {
-        lat: +dataRow[0],
-        lng: +dataRow[1].trim()
+        lat: +lat,
+        lng: +lng.trim(),
+        crawlParkingId: +crawlParkingId
       }
     }
   })
@@ -55,47 +58,66 @@ const classifyCrawlParking = (newParkings, oldParkings) => {
   return Object.entries(newParkings).reduce(
     (parkingClassification, [rowNumber, location]) => {
       console.log(rowNumber)
-      const { distanceType, parkingInfos } = getDistanceTypeInfo(
-        oldParkings,
-        location
-      )
+      const { distanceType, parkingInfos, crawlParkingId } =
+        getDistanceTypeInfo(oldParkings, location)
 
       parkingClassification[distanceType] = [
-        ...parkingClassification[distanceType],
-        { rowNumber, parkingInfos, distanceType }
+        ...(parkingClassification[distanceType] || []),
+        { rowNumber, parkingInfos, distanceType, crawlParkingId }
       ]
 
       return parkingClassification
     },
-    {
-      exist: [],
-      new: [],
-      maybeExist: []
-    }
+    {}
   )
 }
 
-const getDistanceTypeInfo = (parkings, location) => {
+const getDistanceTypeInfo = (parkings, { lat, lng, crawlParkingId }) => {
   let distanceType = classification.NEW
   let parkingInfos = []
   for (let i = 0; i < parkings.length; i++) {
-    const distance = calcParkingDistance(location, parkings[i])
+    const distance = calcParkingDistance({ lat, lng }, parkings[i])
     if (distance <= 10) {
       if (distanceType !== classification.EXIST) {
         parkingInfos = []
       }
       distanceType = classification.EXIST
-      parkingInfos = [...parkingInfos, { distance, parkingId: parkings[i].id }]
+      parkingInfos = [
+        ...parkingInfos,
+        { distance, azParkingId: parkings[i].id }
+      ]
       continue
     }
 
     if (distance <= 20 && distanceType !== classification.EXIST) {
-      distanceType = classification.MAYBE_EXIST
-      parkingInfos = [...parkingInfos, { distance, parkingId: parkings[i].id }]
+      if (distanceType !== classification.MAYBE_EXIST_1) {
+        parkingInfos = []
+      }
+      distanceType = classification.MAYBE_EXIST_1
+      parkingInfos = [
+        ...parkingInfos,
+        { distance, azParkingId: parkings[i].id }
+      ]
+      continue
+    }
+
+    if (
+      distance <= 50 &&
+      distanceType !== classification.EXIST &&
+      distanceType !== classification.MAYBE_EXIST_1
+    ) {
+      if (distanceType !== classification.MAYBE_EXIST_2) {
+        parkingInfos = []
+      }
+      distanceType = classification.MAYBE_EXIST_2
+      parkingInfos = [
+        ...parkingInfos,
+        { distance, azParkingId: parkings[i].id }
+      ]
     }
   }
 
-  return { distanceType, parkingInfos }
+  return { distanceType, parkingInfos, crawlParkingId }
 }
 
 const writeSheetFile = (baseSheet, newWorkbook, fileName, targetRows) => {
@@ -106,14 +128,19 @@ const writeSheetFile = (baseSheet, newWorkbook, fileName, targetRows) => {
     row.eachCell({ includeEmpty: true }, cell => {
       rowData.push(cell.value)
     })
-    rowData.push(
-      targetRow.parkingInfos
-        .map(
-          parking =>
-            `https://admin-hs.carparking.jp/admin/search/edit.php?p_id=${parking.parkingId} (distance: ${parking.distance}m)`
-        )
-        .join('\n')
-    )
+
+    const crawlParkingLink = `https://p-king.jp/detail/${targetRow.crawlParkingId}`
+    const duplicateParkingLinks = targetRow.parkingInfos
+      .map(
+        parking =>
+          `https://admin-hs.carparking.jp/admin/search/edit.php?p_id=${parking.azParkingId}`
+      )
+      .join('\n')
+    const distances = targetRow.parkingInfos
+      .map(parking => `${parking.distance}m`)
+      .join('\n')
+
+    rowData.push(crawlParkingLink, duplicateParkingLinks, distances)
     newRows.push(rowData)
   })
 
@@ -141,7 +168,8 @@ const osakaCityIds = [
 ]
 
 const locationColumn = {
-  name: 'D'
+  crawlParkingId: 'B',
+  location: 'D'
 }
 
 const main = async () => {
@@ -149,7 +177,12 @@ const main = async () => {
   const locations = await readColumnData(baseSheet, locationColumn)
   const osakaParkings = await getDBLocationParkings(osakaCityIds)
   const classifiedCrawlParking = classifyCrawlParking(locations, osakaParkings)
-  // await fs.promises.writeFile('result.js', `export const classifiedCrawlParking = ${JSON.stringify(classifiedCrawlParking)}`)
+  // await fs.promises.writeFile(
+  //   'result.js',
+  //   `export const classifiedCrawlParking = ${JSON.stringify(
+  //     classifiedCrawlParking
+  //   )}`
+  // )
   // const { classifiedCrawlParking } = await import('./result.js')
 
   const newWorkbook = new excelJS.Workbook()

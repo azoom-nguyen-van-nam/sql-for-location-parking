@@ -284,6 +284,7 @@ const formatCrawledParkings = parkings => {
           is_ignore_for_aggregate_markets_hire:
             parking.is_ignore_for_aggregate_markets_hire,
           capacity: parking.capacity,
+          roof_type: parking.roof_type,
           hire_tax_class: parking.hire_tax_class,
           name: `p${existedParking.location_spaces.length + 1}`,
           space_type: parking.space_type,
@@ -384,6 +385,7 @@ const formatCrawledParkings = parkings => {
             is_ignore_for_aggregate_markets_hire:
               parking.is_ignore_for_aggregate_markets_hire,
             capacity: parking.capacity,
+            roof_type: parking.roof_type,
             hire_tax_class: parking.hire_tax_class,
             name: 'p',
             space_type: parking.space_type,

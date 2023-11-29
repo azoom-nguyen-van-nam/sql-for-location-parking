@@ -3,16 +3,75 @@ import excelJS from 'exceljs'
 import fs from 'fs'
 import LatLon from 'geodesy/latlon-ellipsoidal-vincenty.js'
 const MIN_DISTANCE = 30
-const attributionType = {
-  osaka: 4
-}
+
+const sheetNames = [
+  {
+    value: 1,
+    name: '東京都',
+    latin: 'Tokyo',
+    selfCheck: () => {
+      return true
+    },
+    existedCityIds: [
+      13101, 13102, 13103, 13104, 13105, 13106, 13107, 13108, 13109, 13110,
+      13111, 13112, 13113, 13114, 13115, 13116, 13117, 13118, 13119, 13120,
+      13121, 13122, 13123
+    ]
+  },
+  {
+    value: 2,
+    name: '神奈川県　横浜市及び川崎市',
+    latin: 'Kanagawa',
+    selfCheck: value => {
+      return value.includes('神奈川県')
+    },
+    existedCityIds: [
+      14101, 14102, 14103, 14104, 14105, 14106, 14107, 14108, 14109, 14110,
+      14111, 14112, 14113, 14114, 14115, 14116, 14117, 14118, 14131, 14132,
+      14133, 14134, 14135, 14136, 14137, 14201, 14203, 14204, 14205, 14206,
+      14207, 14208, 14209, 14210, 14211, 14212, 14213, 14214, 14215, 14216,
+      14217, 14218
+    ]
+  },
+  {
+    value: 3,
+    name: '福岡県博多市',
+    latin: 'Fukuoka',
+    selfCheck: () => {
+      return true
+    },
+    existedCityIds: [40131, 40132, 40133, 40134, 40135, 40136, 40137]
+  },
+  //  { value: 4, name: '大阪府' }, OSAKA
+  {
+    value: 5,
+    name: '愛知県　名古屋市',
+    latin: 'Nagoya',
+    selfCheck: () => {
+      return true
+    },
+    existedCityIds: [
+      23101, 23102, 23103, 23104, 23105, 23106, 23107, 23108, 23109, 23110,
+      23111, 23112, 23113, 23114, 23115, 23116
+    ]
+  },
+  {
+    value: 6,
+    name: '北海道　札幌市',
+    latin: 'Sapporo',
+    selfCheck: () => {
+      return true
+    },
+    existedCityIds: [1101, 1102, 1103, 1104, 1105, 1106, 1107, 1108, 1109, 1110]
+  }
+]
 
 const locationColumns = {
   parkingName: {
     value: 'A',
     convertFinalValue: v => {
       return {
-        name: v && v.trim(),
+        name: v && v.trim().replace('の駐車場情報', ''),
         space_type: v && v.includes('バイク') ? 2 : 1,
         parking_type: v && v.includes('バイク') ? 2 : 1
       }
@@ -182,7 +241,7 @@ const getDBLocationParkings = async cityIds => {
     .whereIn('city.id', cityIds)
 }
 
-const fetchCrawledParkings = async sheet => {
+const fetchCrawledParkings = async (sheet, attributionValue) => {
   const dataMap = []
   sheet.eachRow((row, rowNumber) => {
     const rowData = Object.entries(locationColumns).reduce(
@@ -221,7 +280,7 @@ const fetchCrawledParkings = async sheet => {
         name_prefix: '',
         rentable_for_outside: -1,
         is_important_for_marketing: 0,
-        attribution: attributionType.osaka, // For OSAKA
+        attribution: attributionValue,
         ground_height: 0,
         tire_width: 0,
         remarks: '',
@@ -231,7 +290,8 @@ const fetchCrawledParkings = async sheet => {
         is_available_for_middle_roof_cars: 1,
         is_ignore_for_aggregate_markets_hire: 0,
         capacity: 0,
-        hire_tax_class: -1
+        hire_tax_class: -1,
+        retention_corp: 1
       }
     )
     if (rowNumber > 1) {
@@ -248,10 +308,14 @@ const calcParkingDistance = (parkingA, parkingB) => {
   return pA.distanceTo(pB)
 }
 
-const getValidCrawledParkings = (newParkings, oldParkings) => {
+const getValidCrawledParkings = (newParkings, oldParkings, selfCheck) => {
   return newParkings.filter((newParking, index) => {
     console.log(index)
-    return checkIsValidDistance(oldParkings, newParking)
+    return (
+      newParking.address &&
+      selfCheck(newParking.address) &&
+      checkIsValidDistance(oldParkings, newParking)
+    )
   })
 }
 
@@ -338,7 +402,8 @@ const formatCrawledParkings = parkings => {
           name_prefix: parking.name_prefix,
           rentable_for_outside: parking.rentable_for_outside,
           is_important_for_marketing: parking.is_important_for_marketing,
-          attribution: parking.attribution
+          attribution: parking.attribution,
+          retention_corp: parking.retention_corp
         },
         location_payment: {
           user_fee: parking.user_fee,
@@ -405,8 +470,7 @@ const formatCrawledParkings = parkings => {
   }, [])
 }
 
-const writeSheetFile = async parkings => {
-  const newWorkbook = new excelJS.Workbook()
+const writeSheetFile = async (sheetName, parkings, newWorkbook) => {
   const newRows = []
 
   parkings.forEach(parking => {
@@ -417,45 +481,40 @@ const writeSheetFile = async parkings => {
     newRows.push(Object.values(parking))
   })
 
-  const newWorksheet = newWorkbook.addWorksheet('>= 30m')
+  const newWorksheet = newWorkbook.addWorksheet(sheetName)
   newRows.forEach(rowData => {
     newWorksheet.addRow(rowData)
   })
-  await newWorkbook.xlsx.writeFile('result.xlsx')
 }
 
-/**
- * Processing Steps:
- * I will read the provided Excel file and filter data from the `緯度経度` column
- * With Osaka, I obtain its cityIds from the admin_carparking (https://github.com/azoom/admin-carparking/blob/19426286f57565b540c4043ee443e426a6228f03/admin/report/car_room_operational_status.php#L76)
- * I retrieve the locationParkings with Osaka cityIds.
- * Then I proceed to classify the crawled parking into three categories. (exist, maybeExist, new)
- * Finally, I proceed to write it to an Excel file.
- */
 const filePath = './parking.xlsx'
-const sheetName = '大阪市' // OSAKA
-const osakaCityIds = [
-  27102, 27103, 27104, 27106, 27107, 27108, 27109, 27111, 27113, 27114, 27115,
-  27116, 27117, 27118, 27119, 27120, 27121, 27122, 27123, 27124, 27125, 27126,
-  27127, 27128, 27227
-]
-
 const main = async () => {
-  const baseSheet = await getSheet(filePath, sheetName)
-  const locations = await fetchCrawledParkings(baseSheet)
-  const osakaParkings = await getDBLocationParkings(osakaCityIds)
-  const validParkings = getValidCrawledParkings(locations, osakaParkings)
-  const formattedParkings = formatCrawledParkings(validParkings)
+  const newWorkbook = new excelJS.Workbook()
 
-  console.log('formattedParkings length', formattedParkings.length)
+  for (let sheet of Object.values(sheetNames)) {
+    const areaSheet = await getSheet(filePath, sheet.name)
+    const locations = await fetchCrawledParkings(areaSheet, sheet.value)
+    const existedParkings = await getDBLocationParkings(sheet.existedCityIds)
+    const validParkings = getValidCrawledParkings(
+      locations,
+      existedParkings,
+      sheet.selfCheck
+    )
+    const formattedParkings = formatCrawledParkings(validParkings)
 
-  await fs.promises.writeFile(
-    'final.js',
-    `export const formattedParkings = ${JSON.stringify(formattedParkings)}`
-  )
-  // const { formattedParkings } = await import('./result.js')
+    // const { formattedParkings } = await import(
+    //   `./${sheet.value}-${sheet.name}.js`
+    // )
+    console.log('formattedParkings length', formattedParkings.length)
+    writeSheetFile(sheet.name, validParkings, newWorkbook)
 
-  writeSheetFile(validParkings)
+    await fs.promises.writeFile(
+      `${sheet.value}-${sheet.name}.js`,
+      `export const formattedParkings = ${JSON.stringify(formattedParkings)}`
+    )
+  }
+
+  await newWorkbook.xlsx.writeFile('result.xlsx')
 }
 
 main()
